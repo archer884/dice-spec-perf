@@ -1,3 +1,7 @@
-digit = { '0'..'9' }
-separator = { "d" }
-spec = { (digit+ ~ separator ~ digit+) | digit+ }
+Digit = { '0'..'9' }
+Separator = { "d" }
+Modifier = { "+" ~ Digit+ }
+Single = { Digit+ }
+Multiple = { Digit+ ~ Separator ~ Digit+ }
+Dice = { Multiple | Single }
+FullSpec = { (Dice ~ Modifier) | Dice }

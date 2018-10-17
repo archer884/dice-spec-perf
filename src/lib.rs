@@ -1,3 +1,5 @@
+#![feature(dbg_macro)]
+
 #[macro_use]
 extern crate pest_derive;
 
@@ -8,20 +10,11 @@ use std::str::FromStr;
 #[grammar = "../specification.pest"]
 struct SpecificationParser;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PestSpecification {
-    count: u8,
-    size: u8,
-}
-
-impl PestSpecification {
-    fn single(size: u8) -> PestSpecification {
-        PestSpecification { size, count: 1 }
-    }
-
-    fn multiple(count: u8, size: u8) -> PestSpecification {
-        PestSpecification { count, size }
-    }
+    pub count: u8,
+    pub size: u8,
+    pub modifier: u8,
 }
 
 #[derive(Debug)]
@@ -42,19 +35,57 @@ impl FromStr for PestSpecification {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use pest::Parser;
 
-        let mut elements = SpecificationParser::parse(Rule::spec, s)
+        // Our grammar declares two potential elements of a full specification, both of which are
+        // represented here.
+        let mut elements = SpecificationParser::parse(Rule::FullSpec, s)
             .map_err(|_| ParseSpecificationError::Invalid)?
             .next()
-            .ok_or(ParseSpecificationError::Invalid)?
-            .into_inner()
-            .filter(|x| x.as_rule() == Rule::digit);
+            .unwrap()
+            .into_inner();
 
-        // Our grammar makes this safe to unwrap.
-        let left = elements.next().unwrap().as_str();
+        // The Dice element must be included.
+        let (left, right) = {
+            // Unfortunately, the actual Digits are wrapped several layers deep...
+            let mut dice = elements
+                .next()
+                .unwrap()
+                .into_inner()
+                .next()
+                .unwrap()
+                .into_inner()
+                .filter(|x| x.as_rule() == Rule::Digit);
 
-        match elements.next().map(|x| x.as_str()) {
-            None => Ok(PestSpecification::single(left.parse()?)),
-            Some(right) => Ok(PestSpecification::multiple(left.parse()?, right.parse()?)),
+            let left = dice.next().unwrap().as_str().parse()?;
+            match dice.next().map(|x| x.as_str()) {
+                None => (left, None),
+                Some(right) => (left, Some(right.parse()?)),
+            }
+        };
+
+        // The Modifier element is optional.
+        let modifier = match elements.next() {
+            None => 0,
+            Some(element) => element
+                .into_inner()
+                .filter(|x| x.as_rule() == Rule::Digit)
+                .next()
+                .unwrap()
+                .as_str()
+                .parse()?,
+        };
+
+        match right {
+            None => Ok(PestSpecification {
+                count: 1,
+                size: left,
+                modifier,
+            }),
+
+            Some(right) => Ok(PestSpecification {
+                count: left,
+                size: right,
+                modifier,
+            }),
         }
     }
 }
@@ -98,42 +129,92 @@ impl FromStr for RegexSpecification {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct SplitSpecification {
-    count: u8,
-    size: u8,
-}
-
-impl SplitSpecification {
-    fn single(size: u8) -> SplitSpecification {
-        SplitSpecification { size, count: 1 }
-    }
-
-    fn multiple(count: u8, size: u8) -> SplitSpecification {
-        SplitSpecification { count, size }
-    }
+    pub count: u8,
+    pub size: u8,
+    pub modifier: u8,
 }
 
 impl FromStr for SplitSpecification {
     type Err = ParseSpecificationError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.trim().split('d');
+        // The two potential elements of a full specification are the dice spec and the modifier.
+        // Of these, the modifier is optional.
+        let mut elements = s.trim().split('+');
 
-        let left: u8 = parts
+        let mut dice = elements
+            .next()
+            .ok_or(ParseSpecificationError::Invalid)?
+            .split('d');
+
+        let left = dice
             .next()
             .ok_or(ParseSpecificationError::Invalid)?
             .parse()?;
 
-        match parts.next() {
-            None => Ok(SplitSpecification::single(left)),
+        let modifier = match elements.next() {
+            None => 0,
+            Some(x) => x.parse()?,
+        };
+
+        // Additional expression elements are invalid.
+        if elements.next().is_some() {
+            return Err(ParseSpecificationError::Invalid);
+        }
+
+        match dice.next() {
+            None => Ok(SplitSpecification {
+                count: 1,
+                size: left,
+                modifier,
+            }),
+
             Some(right) => {
-                if parts.next().is_some() {
+
+                // Further dice expression elements are invalid.
+                if dice.next().is_some() {
                     return Err(ParseSpecificationError::Invalid);
                 }
 
-                Ok(SplitSpecification::multiple(left, right.parse()?))
+                Ok(SplitSpecification {
+                    count: left,
+                    size: right.parse()?,
+                    modifier,
+                })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pest() {
+        use super::PestSpecification;
+
+        let actual: PestSpecification = "2d6+3".parse().unwrap();
+        let expected = PestSpecification {
+            count: 2,
+            size: 6,
+            modifier: 3,
+        };
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn split() {
+        use super::SplitSpecification;
+
+        let actual: SplitSpecification = "2d6+3".parse().unwrap();
+        let expected = SplitSpecification {
+            count: 2,
+            size: 6,
+            modifier: 3,
+        };
+
+        assert_eq!(actual, expected);
     }
 }
